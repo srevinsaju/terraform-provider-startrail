@@ -6,12 +6,8 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
-
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -23,13 +19,7 @@ func NewServiceDataSource() datasource.DataSource {
 
 // ServiceDataSource defines the data source implementation.
 type ServiceDataSource struct {
-	client *http.Client
-}
-
-// ServiceDataSourceModel describes the data source data model.
-type ServiceDataSourceModel struct {
-	ConfigurableAttribute types.String `tfsdk:"configurable_attribute"`
-	Id                    types.String `tfsdk:"id"`
+	client *StartrailProviderClient
 }
 
 func (d *ServiceDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -42,13 +32,17 @@ func (d *ServiceDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 		MarkdownDescription: "Service data source",
 
 		Attributes: map[string]schema.Attribute{
-			"configurable_attribute": schema.StringAttribute{
-				MarkdownDescription: "Service configurable attribute",
-				Optional:            true,
-			},
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Service identifier",
 				Computed:            true,
+			},
+			"name": schema.StringAttribute{
+				MarkdownDescription: "Service name",
+				Required:            true,
+			},
+			"environment": schema.StringAttribute{
+				MarkdownDescription: "Service environment",
+				Required:            true,
 			},
 		},
 	}
@@ -60,7 +54,7 @@ func (d *ServiceDataSource) Configure(ctx context.Context, req datasource.Config
 		return
 	}
 
-	client, ok := req.ProviderData.(*http.Client)
+	client, ok := req.ProviderData.(*StartrailProviderClient)
 
 	if !ok {
 		resp.Diagnostics.AddError(
@@ -75,7 +69,7 @@ func (d *ServiceDataSource) Configure(ctx context.Context, req datasource.Config
 }
 
 func (d *ServiceDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data ServiceDataSourceModel
+	var data ServiceModel
 
 	// Read Terraform configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -84,22 +78,30 @@ func (d *ServiceDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		return
 	}
 
-	// If applicable, this is a great opportunity to initialize any necessary
-	// provider client data and make a call using it.
-	// httpResp, err := d.client.Do(httpReq)
-	// if err != nil {
-	//     resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read example, got error: %s", err))
-	//     return
-	// }
+	environment := data.Environment.ValueString()
+	if environment == "" {
+		environment = d.client.Environment
+	}
 
-	// For the purposes of this example code, hardcoding a response value to
-	// save into the Terraform state.
-	data.Id = types.StringValue("example-id")
+	clientReq := d.client.Client.ServiceAPI.Get(ctx, d.client.Tenant, environment, data.Name.ValueString())
+	startrailResponse, execute, err := clientReq.Execute()
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", err))
+		return
+	}
+	handleStartrailDiagnostics(startrailResponse.GetDiagnostics(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-	// Write logs using the tflog package
-	// Documentation: https://terraform.io/plugin/log
-	tflog.Trace(ctx, "read a data source")
+	if execute.StatusCode != 200 {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", execute.Body))
+		return
+	}
 
-	// Save data into Terraform state
+	data, diags := parseServiceResponse(startrailResponse)
+	resp.Diagnostics.Append(diags...)
+
+	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

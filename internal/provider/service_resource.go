@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	bindings "github.com/srevinsaju/startrail-go-sdk"
 	"regexp"
@@ -30,94 +32,27 @@ func NewServiceResource() resource.Resource {
 
 // ServiceResource defines the resource implementation.
 type ServiceResource struct {
-	client *bindings.APIClient
+	client *StartrailProviderClient
 }
 
-// {
-//  "access": [
-//    {
-//      "auth": true,
-//      "endpoint": "string",
-//      "internal": true
-//    }
-//  ],
-//  "description": "This is a hello world service.",
-//  "disabled": true,
-//  "environment": "production",
-//  "logging": {
-//    "additionalProp1": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    },
-//    "additionalProp2": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    },
-//    "additionalProp3": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    }
-//  },
-//  "metadata": {
-//    "labels": {
-//      "additionalProp1": "string",
-//      "additionalProp2": "string",
-//      "additionalProp3": "string"
-//    }
-//  },
-//  "name": "hello-world",
-//  "remarks": "Make sure this service prints hello world on /",
-//  "sources": {
-//    "additionalProp1": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    },
-//    "additionalProp2": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    },
-//    "additionalProp3": {
-//      "labels": {
-//        "additionalProp1": "string",
-//        "additionalProp2": "string",
-//        "additionalProp3": "string"
-//      }
-//    }
-//  },
-//  "tenant": "startrail",
-//  "updated_at": "2021-01-01T00:00:00.000000",
-//  "updated_by": "string",
-//  "updated_date": "string"
-//}
+type ServiceResourceModelLogging struct {
+	Labels types.Map    `tfsdk:"labels"`
+	Source types.String `tfsdk:"source"`
+}
 
-// ServiceResourceModel describes the resource data model.
-type ServiceResourceModel struct {
-	Id          types.String   `tfsdk:"id"`
-	Access      types.ListType `tfsdk:"access"`
-	Description types.String   `tfsdk:"description"`
-	Disabled    types.Bool     `tfsdk:"disabled"`
-	Environment types.String   `tfsdk:"environment"`
-	Logging     types.MapType  `tfsdk:"logging"`
-	Metadata    types.MapType  `tfsdk:"metadata"`
-	Name        types.String   `tfsdk:"name"`
-	Remarks     types.String   `tfsdk:"remarks"`
-	Sources     types.MapType  `tfsdk:"sources"`
-	Tenant      types.String   `tfsdk:"tenant"`
+type ServiceResourceM0delSource struct {
+	Labels types.Map    `tfsdk:"labels"`
+	Source types.String `tfsdk:"source"`
+}
+
+type ServiceResourceModelMetadata struct {
+	Labels types.Map `tfsdk:"labels"`
+}
+
+type ServiceResourceModelAccess struct {
+	Auth     types.Bool   `tfsdk:"auth"`
+	Endpoint types.String `tfsdk:"endpoint"`
+	Internal types.Bool   `tfsdk:"internal"`
 }
 
 func (r *ServiceResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -151,6 +86,23 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 					PlanModifiers: nil,
 				},
 			},
+			"logging": schema.ListNestedBlock{
+				MarkdownDescription: "Logging configuration for the service",
+
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"labels": schema.MapAttribute{
+							Description: "Labels to apply to the service",
+							Optional:    true,
+							ElementType: types.StringType,
+						},
+						"source": schema.StringAttribute{
+							Description: "The source to use for the service",
+							Required:    true,
+						},
+					},
+				},
+			},
 			"source": schema.ListNestedBlock{
 				MarkdownDescription: "List of sources to use for the service, this is a map of source names to source configurations.",
 
@@ -159,6 +111,7 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 						"labels": schema.MapAttribute{
 							Description: "Labels to apply to the service",
 							Optional:    true,
+							ElementType: types.StringType,
 						},
 						"source": schema.StringAttribute{
 							Description: "The source to use for the service",
@@ -168,10 +121,14 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 				},
 			},
 			"metadata": schema.SingleNestedBlock{
+				MarkdownDescription: "Metadata to apply to the service",
+
 				Attributes: map[string]schema.Attribute{
 					"labels": schema.MapAttribute{
 						Description: "Labels to apply to the service",
 						Optional:    true,
+						Computed:    true,
+						ElementType: types.StringType,
 					},
 				},
 			},
@@ -191,13 +148,18 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 					stringvalidator.RegexMatches(
 						regexp.MustCompile(`^[a-z0-9-]+$`), "Name of the service must be lowercase alphanumeric with dashes"),
 				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"description": schema.StringAttribute{
 				MarkdownDescription: "Service description",
 				Optional:            true,
+				Computed:            true,
 			},
 			"disabled": schema.BoolAttribute{
 				MarkdownDescription: "Service disabled",
+				Computed:            true,
 			},
 			"environment": schema.StringAttribute{
 				MarkdownDescription: "Service environment",
@@ -206,26 +168,14 @@ func (r *ServiceResource) Schema(ctx context.Context, req resource.SchemaRequest
 					stringvalidator.RegexMatches(
 						regexp.MustCompile(`^[a-z0-9-]+$`), "Environment must be lowercase alphanumeric with dashes"),
 				},
-			},
-			"updated_at": schema.StringAttribute{
-				Computed: true,
-			},
-			"updated_by": schema.StringAttribute{
-				Computed: true,
-			},
-			"updated_date": schema.StringAttribute{
-				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"remarks": schema.StringAttribute{
 				MarkdownDescription: "Service remarks",
 				Optional:            true,
-			},
-			"tenant": schema.StringAttribute{
-				MarkdownDescription: "Service tenant",
-				Validators: []validator.String{
-					stringvalidator.RegexMatches(
-						regexp.MustCompile(`^[a-z0-9-]+$`), "Tenant must be lowercase alphanumeric with dashes"),
-				},
+				Computed:            true,
 			},
 		},
 	}
@@ -237,7 +187,7 @@ func (r *ServiceResource) Configure(ctx context.Context, req resource.ConfigureR
 		return
 	}
 
-	client, ok := req.ProviderData.(*bindings.APIClient)
+	client, ok := req.ProviderData.(*StartrailProviderClient)
 
 	if !ok {
 		resp.Diagnostics.AddError(
@@ -252,26 +202,16 @@ func (r *ServiceResource) Configure(ctx context.Context, req resource.ConfigureR
 }
 
 func (r *ServiceResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data ServiceResourceModel
+	var data ServiceModel
 
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// If applicable, this is a great opportunity to initialize any necessary
-	// provider client data and make a call using it.
-	// httpResp, err := r.client.Do(httpReq)
-	// if err != nil {
-	//     resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create example, got error: %s", err))
-	//     return
-	// }
-
-	// For the purposes of this example code, hardcoding a response value to
-	// save into the Terraform state.
-	data.Id = types.StringValue(fmt.Sprintf("%s/%s/%s", data.Tenant.String(), data.Environment.String(), data.Name.String()))
+	data, diags := r.post(ctx, data)
+	resp.Diagnostics.Append(diags...)
 
 	// Write logs using the tflog package
 	// Documentation: https://terraform.io/plugin/log
@@ -282,7 +222,8 @@ func (r *ServiceResource) Create(ctx context.Context, req resource.CreateRequest
 }
 
 func (r *ServiceResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var data ServiceResourceModel
+
+	var data ServiceModel
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -291,6 +232,29 @@ func (r *ServiceResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
+	environment := data.Environment.ValueString()
+	if environment == "" {
+		environment = r.client.Environment
+	}
+
+	clientReq := r.client.Client.ServiceAPI.Get(ctx, r.client.Tenant, environment, data.Name.ValueString())
+	startrailResponse, execute, err := clientReq.Execute()
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", err))
+		return
+	}
+	handleStartrailDiagnostics(startrailResponse.GetDiagnostics(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if execute.StatusCode != 200 {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", execute.Body))
+		return
+	}
+
+	data, diags := parseServiceResponse(startrailResponse)
+	resp.Diagnostics.Append(diags...)
 	// If applicable, this is a great opportunity to initialize any necessary
 	// provider client data and make a call using it.
 	// httpResp, err := r.client.Do(httpReq)
@@ -304,48 +268,19 @@ func (r *ServiceResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *ServiceResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data ServiceResourceModel
+	var data ServiceModel
 
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	clientReq := r.client.ServiceAPI.Create(ctx, data.Tenant.String())
-	var access []bindings.Access
-	req.Plan.GetAttribute(ctx, path.Root("access"), &access)
-	var metadata bindings.Metadata
-	req.Plan.GetAttribute(ctx, path.Root("metadata"), &metadata)
-	var logging map[string]bindings.Logging
-	req.Plan.GetAttribute(ctx, path.Root("logging"), &logging)
-	var sources map[string]bindings.Source
-	req.Plan.GetAttribute(ctx, path.Root("sources"), &sources)
-
-	service := bindings.Service{
-		Name:        data.Name.ValueString(),
-		Description: data.Description.ValueString(),
-		Remarks:     data.Remarks.ValueString(),
-		Environment: data.Environment.ValueString(),
-		Disabled:    data.Disabled.ValueBoolPointer(),
-		Access:      access,
-		Metadata:    metadata,
-		Logging:     logging,
-		Sources:     sources,
-	}
-	req.Plan.GetAttribute(ctx, path.Root("access"), &service.Access)
-	clientReq.Service(service)
-	execute, err := clientReq.Execute()
-	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update service, got error: %s", err))
+	data, diags := r.post(ctx, data)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	if execute.StatusCode != 200 {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update service, got error: %s", execute.Body))
-		return
-	}
-
 	// If applicable, this is a great opportunity to initialize any necessary
 	// provider client data and make a call using it.
 	// httpResp, err := r.client.Do(httpReq)
@@ -358,8 +293,153 @@ func (r *ServiceResource) Update(ctx context.Context, req resource.UpdateRequest
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+func (r *ServiceResource) post(ctx context.Context, data ServiceModel) (ServiceModel, diag.Diagnostics) {
+
+	var diags diag.Diagnostics
+
+	environment := data.Environment.ValueString()
+
+	if environment == "" {
+		environment = r.client.Environment
+	}
+	tenant := r.client.Tenant
+
+	metadata := bindings.NullableMetadata{}
+	logging := map[string]bindings.Logging{}
+	sources := map[string]bindings.Source{}
+	access := []bindings.Access{}
+
+	for _, a := range data.Access {
+		access = append(access, bindings.Access{
+			Auth:     a.Auth.ValueBool(),
+			Endpoint: a.Endpoint.ValueString(),
+			Internal: a.Internal.ValueBool(),
+		})
+	}
+	for _, l := range data.Logging {
+		b := bindings.Logging{}
+		l.Labels.ElementsAs(ctx, &b.Labels, true)
+		logging[l.Source.ValueString()] = b
+	}
+	for _, s := range data.Sources {
+		b := bindings.Source{}
+		s.Labels.ElementsAs(ctx, &b.Labels, true)
+		sources[s.Source.ValueString()] = b
+	}
+
+	service := bindings.Service{
+		Name:        data.Name.ValueString(),
+		Description: data.Description.ValueString(),
+		Remarks:     data.Remarks.ValueString(),
+		Environment: environment,
+		Tenant:      tenant,
+
+		Disabled: data.Disabled.ValueBoolPointer(),
+		Access:   access,
+		Metadata: metadata,
+		Logging:  logging,
+		Sources:  sources,
+	}
+
+	clientReq := r.client.Client.ServiceAPI.Create(ctx)
+	clientReq = clientReq.Service(service)
+	startrailResponse, execute, err := clientReq.Execute()
+
+	// error handling
+	if err != nil {
+		diags.AddError("Client Error", fmt.Sprintf("Unable to update service, got error: %s", err))
+		return ServiceModel{}, diags
+	}
+	handleStartrailDiagnostics(startrailResponse.GetDiagnostics(), &diags)
+	if diags.HasError() {
+		return ServiceModel{}, diags
+	}
+	if execute.StatusCode != 200 {
+		diags.AddError("Client Error", fmt.Sprintf("Unable to update service, got errors: %s", execute.Body))
+		return ServiceModel{}, diags
+	}
+
+	data, diags = parseServiceResponse(startrailResponse)
+	return data, diags
+}
+
+func parseServiceResponse(startrailResponse *bindings.ServiceResponse) (data ServiceModel, diags diag.Diagnostics) {
+	s := startrailResponse.GetResponse()
+
+	var tfLogging []ServiceResourceModelLogging
+	for k, v := range s.Logging {
+		l := map[string]attr.Value{}
+		for k1, v1 := range v.Labels {
+			l[k1] = types.StringValue(v1)
+		}
+		labels, d := types.MapValue(types.StringType, l)
+		if d.HasError() {
+			diags.Append(d...)
+		}
+		tfLogging = append(tfLogging, ServiceResourceModelLogging{
+			Labels: labels,
+			Source: types.StringValue(k),
+		})
+	}
+	var tfSources []ServiceResourceM0delSource
+	for k, v := range s.Sources {
+		l := map[string]attr.Value{}
+		for k1, v1 := range v.Labels {
+			l[k1] = types.StringValue(v1)
+		}
+		labels, d := types.MapValue(types.StringType, l)
+		if d.HasError() {
+			diags.Append(d...)
+		}
+		tfSources = append(tfSources, ServiceResourceM0delSource{
+			Labels: labels,
+			Source: types.StringValue(k),
+		})
+	}
+	var tfMetadata *ServiceResourceModelMetadata
+	if s.HasMetadata() {
+		l := map[string]attr.Value{}
+		m := s.GetMetadata()
+		if m.GetLabels() != nil {
+			for k1, v1 := range m.GetLabels() {
+				l[k1] = types.StringValue(v1)
+			}
+			labels, d := types.MapValue(types.StringType, l)
+			if d.HasError() {
+				diags.Append(d...)
+			}
+			tfMetadata = &ServiceResourceModelMetadata{
+				Labels: labels,
+			}
+		}
+
+	}
+	var tfAccess []ServiceResourceModelAccess
+	for _, a := range s.Access {
+		tfAccess = append(tfAccess, ServiceResourceModelAccess{
+			Auth:     types.BoolValue(a.Auth),
+			Endpoint: types.StringValue(a.Endpoint),
+			Internal: types.BoolValue(a.Internal),
+		})
+	}
+
+	data = ServiceModel{
+		Id:          types.StringValue(fmt.Sprintf("%s/%s/%s", s.GetTenant(), s.GetEnvironment(), s.GetName())),
+		Name:        types.StringValue(s.GetName()),
+		Description: types.StringValue(s.GetDescription()),
+		Remarks:     types.StringValue(s.GetRemarks()),
+		Environment: types.StringValue(s.GetEnvironment()),
+		Disabled:    types.BoolValue(s.GetDisabled()),
+		Access:      tfAccess,
+		Metadata:    tfMetadata,
+		Logging:     tfLogging,
+		Sources:     tfSources,
+	}
+	return data, diags
+}
+
 func (r *ServiceResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var data ServiceResourceModel
+	var data ServiceModel
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -368,24 +448,26 @@ func (r *ServiceResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	clientReq := r.client.ServiceAPI.Delete(ctx, data.Tenant.String(), data.Environment.String(), data.Name.String())
-	execute, err := clientReq.Execute()
+	environment := data.Environment.ValueString()
+	if environment == "" {
+		environment = r.client.Environment
+	}
+
+	clientReq := r.client.Client.ServiceAPI.Delete(ctx, r.client.Tenant, environment, data.Name.ValueString())
+	startrailResponse, execute, err := clientReq.Execute()
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", err))
 		return
 	}
+	handleStartrailDiagnostics(startrailResponse.GetDiagnostics(), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	if execute.StatusCode != 200 {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete service, got error: %s", execute.Body))
 		return
 	}
-
-	// If applicable, this is a great opportunity to initialize any necessary
-	// provider client data and make a call using it.
-	// httpResp, err := r.client.Do(httpReq)
-	// if err != nil {
-	//     resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete example, got error: %s", err))
-	//     return
-	// }
 }
 
 func (r *ServiceResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

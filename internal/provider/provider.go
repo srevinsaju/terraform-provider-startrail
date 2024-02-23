@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	bindings "github.com/srevinsaju/startrail-go-sdk"
 	"net/http"
+	"net/url"
 )
 
 // Ensure StartrailProvider satisfies various provider interfaces.
@@ -28,9 +29,17 @@ type StartrailProvider struct {
 
 // StartrailProviderModel describes the provider data model.
 type StartrailProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	ApiKey   types.String `tfsdk:"api_key"`
-	Debug    types.Bool   `tfsdk:"debug"`
+	Endpoint    types.String `tfsdk:"endpoint"`
+	ApiKey      types.String `tfsdk:"api_key"`
+	Debug       types.Bool   `tfsdk:"debug"`
+	Environment types.String `tfsdk:"environment"`
+	Tenant      types.String `tfsdk:"tenant"`
+}
+
+type StartrailProviderClient struct {
+	Client      *bindings.APIClient
+	Tenant      string
+	Environment string
 }
 
 func (p *StartrailProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -58,6 +67,10 @@ func (p *StartrailProvider) Schema(ctx context.Context, req provider.SchemaReque
 				MarkdownDescription: "The environment to use for API requests.",
 				Optional:            true,
 			},
+			"debug": schema.BoolAttribute{
+				MarkdownDescription: "Enable debug mode.",
+				Optional:            true,
+			},
 		},
 	}
 }
@@ -75,21 +88,41 @@ func (p *StartrailProvider) Configure(ctx context.Context, req provider.Configur
 	// if data.Endpoint.IsNull() { /* ... */ }
 
 	// Example client configuration for data sources and resources
+	u, err := url.Parse(data.Endpoint.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid endpoint", "The endpoint is not a valid URL")
+		return
+	}
+
 	client := bindings.NewAPIClient(&bindings.Configuration{
-		Host:   data.Endpoint.ValueString(),
+		Host:   "",
 		Scheme: "",
 		DefaultHeader: map[string]string{
-			"Authorization": fmt.Sprintf("apiKey %s", data.ApiKey.ValueString()),
+			"Authorization": fmt.Sprintf("Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ijl6U0ZFUnlBNl8wUk9CcV9Ddl9SdiJ9.eyJpc3MiOiJodHRwczovL3N0YXJ0cmFpbC1kZXYudXMuYXV0aDAuY29tLyIsInN1YiI6Imdvb2dsZS1vYXV0aDJ8MTAyNjc0NDg5NjUxMTA4MzUzMjA2IiwiYXVkIjpbImh0dHBzOi8vZGV2LnN0YXJ0cmFpbC5zcmV2LmluIiwiaHR0cHM6Ly9zdGFydHJhaWwtZGV2LnVzLmF1dGgwLmNvbS91c2VyaW5mbyJdLCJpYXQiOjE3MDg2ODQ0NTAsImV4cCI6MTcwODc3MDg1MCwiYXpwIjoiYVg0ckh0WFY4bTdSNW9UektPWlhkMXpVenFzeGlSN3ciLCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIn0.UXpEmR9tBpy878R42igkp3OVEUCTbSOTfG8uTFwNv1SqlWurx4cIVD6QIFdheJmAa2MI0ZWRweC3aEKDIDP07Vx1-7HJpmBz87T5TXVHFnPEcqYYwvJaKM5EvoumKYAjW2oIV6fyS_ig595AdM-gaxQAmZAuFNMnaXonQRc8AUC14eHyM54NDEp8Duzv1KZ8CieHwbHIb4m8ghoOyxQc32CZEhpH2NBRoGoPAcdqOt-pl_aVvfSLJWnH2l3_m4DqdWauyXyKiV3BVbFy86s9ZFE01lu-gQTgQQTPk_7hgevQb11P92XGKvC75B_U_ZBpb1IWzSTEqLUdYpcE0FxZeg"),
 		},
-		UserAgent:        "startrail-terraform-provider/" + p.version,
-		Debug:            data.Debug.ValueBool(),
-		Servers:          nil,
+		UserAgent: "startrail-terraform-provider/" + p.version,
+		Debug:     data.Debug.ValueBool(),
+		Servers: []bindings.ServerConfiguration{
+			{
+				URL: u.String(),
+			},
+		},
 		OperationServers: nil,
 		HTTPClient:       http.DefaultClient,
 	})
+	tenant := data.Tenant.ValueString()
+	if tenant == "" {
+		tenant = "default"
+	}
 
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	c := &StartrailProviderClient{
+		Client:      client,
+		Tenant:      tenant,
+		Environment: data.Environment.ValueString(),
+	}
+
+	resp.DataSourceData = c
+	resp.ResourceData = c
 }
 
 func (p *StartrailProvider) Resources(ctx context.Context) []func() resource.Resource {
