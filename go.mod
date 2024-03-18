@@ -8,7 +8,7 @@ require (
 	github.com/hashicorp/terraform-plugin-framework-validators v0.12.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
 	github.com/srevinsaju/startrail-go-sdk v0.0.0-20240301045739-734366f2507e
-	github.com/zalando/go-keyring v0.2.3
+	github.com/zalando/go-keyring v0.2.4
 	golang.org/x/oauth2 v0.14.0
 )
 
